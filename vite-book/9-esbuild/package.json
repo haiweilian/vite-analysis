@@ -1,0 +1,17 @@
+{
+  "name": "9-esbuild",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "build": "./node_modules/.bin/esbuild src/index.jsx --bundle --outfile=dist/out.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "esbuild": "^0.14.36",
+    "react": "^18.0.0",
+    "react-dom": "^18.0.0"
+  }
+}
