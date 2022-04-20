@@ -70,10 +70,6 @@
     "vite": "workspace:*",
     "vitepress": "^0.22.3"
   },
-  "simple-git-hooks": {
-    "pre-commit": "pnpm exec lint-staged --concurrent false",
-    "commit-msg": "pnpm exec ts-node scripts/verifyCommit.ts $1"
-  },
   "lint-staged": {
     "*": [
       "prettier --write --ignore-unknown"
