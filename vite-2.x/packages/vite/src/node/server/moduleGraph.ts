@@ -12,25 +12,33 @@ import { FS_PREFIX } from '../constants'
 import type { TransformResult } from './transformRequest'
 
 export class ModuleNode {
-  /**
-   * Public served url path, starts with /
-   */
+  // 原始请求 url
   url: string
-  /**
-   * Resolved file system path + query
-   */
+  // 文件绝对路径 + query
   id: string | null = null
+  // 文件绝对路径
   file: string | null = null
+  // 文件类型
   type: 'js' | 'css'
+  // 模块信息
   info?: ModuleInfo
+  // resolveId 钩子返回结果中的元数据
   meta?: Record<string, any>
+  // 重要：该模块的引用方
   importers = new Set<ModuleNode>()
+  // 重要：该模块所依赖的模块
   importedModules = new Set<ModuleNode>()
+  // 接受更新的模块
   acceptedHmrDeps = new Set<ModuleNode>()
+  // 是否为`接受自身模块`的更新
   isSelfAccepting?: boolean
+  // 经过 transform 钩子后的编译结果
   transformResult: TransformResult | null = null
+  // SSR 过程中经过 transform 钩子后的编译结果
   ssrTransformResult: TransformResult | null = null
+  // SSR 过程中的模块信息
   ssrModule: Record<string, any> | null = null
+  // 上一次热更新的时间戳
   lastHMRTimestamp = 0
   lastInvalidationTimestamp = 0
 
@@ -55,11 +63,26 @@ export type ResolvedUrl = [
   meta: object | null | undefined
 ]
 
+// VITE-HMR 2-创建依赖图节点
+// 什么是模块依赖图：
+// 1、当前文件 import 了哪些文件
+// 2、当前文件被哪个文件 import 了
+// 3、两者互相建立关系形成依赖图
 export class ModuleGraph {
+  // 由原始请求 url 到模块节点的映射
+  // /src/main.ts?type=x
   urlToModuleMap = new Map<string, ModuleNode>()
+
+  // 由解析后路径 id 到模块节点的映射
+  // /User/Project/src/main.ts?type=x
   idToModuleMap = new Map<string, ModuleNode>()
+
+  // 由文件路径到模块节点的映射，一个文件可以依赖多个模块
+  // /User/Project/src/main.ts
   // a single file may corresponds to multiple modules with different queries
   fileToModulesMap = new Map<string, Set<ModuleNode>>()
+
+  // VITETODO
   safeModulesPath = new Set<string>()
 
   constructor(
@@ -77,14 +100,17 @@ export class ModuleGraph {
     return this.urlToModuleMap.get(url)
   }
 
+  // 根据 id 获取
   getModuleById(id: string): ModuleNode | undefined {
     return this.idToModuleMap.get(removeTimestampQuery(id))
   }
 
+  // 根据 file 获取
   getModulesByFile(file: string): Set<ModuleNode> | undefined {
     return this.fileToModulesMap.get(file)
   }
 
+  // 当文件变化
   onFileChange(file: string): void {
     const mods = this.getModulesByFile(file)
     if (mods) {
@@ -95,6 +121,7 @@ export class ModuleGraph {
     }
   }
 
+  // 清楚模块的缓存
   invalidateModule(
     mod: ModuleNode,
     seen: Set<ModuleNode> = new Set(),
@@ -110,6 +137,7 @@ export class ModuleGraph {
     invalidateSSRModule(mod, seen)
   }
 
+  // 清除所有的缓存
   invalidateAll(): void {
     const timestamp = Date.now()
     const seen = new Set<ModuleNode>()
@@ -123,6 +151,7 @@ export class ModuleGraph {
    * If there are dependencies that no longer have any importers, they are
    * returned as a Set.
    */
+  // 更新模块依赖图
   async updateModuleInfo(
     mod: ModuleNode,
     importedModules: Set<string | ModuleNode>,
@@ -134,15 +163,20 @@ export class ModuleGraph {
     const prevImports = mod.importedModules
     const nextImports = (mod.importedModules = new Set())
     let noLongerImported: Set<ModuleNode> | undefined
-    // update import graph
+
+    // 遍历 `当前模块` 所 `依赖的模块`
     for (const imported of importedModules) {
+      // 找到 `依赖模块` 的节点信息
       const dep =
         typeof imported === 'string'
           ? await this.ensureEntryFromUrl(imported, ssr)
           : imported
+
+      // 把 `当前模块` 添加进 `依赖模块` 的 `模块的引用方` 里形成双向引用。
       dep.importers.add(mod)
       nextImports.add(dep)
     }
+
     // remove the importer from deps that were imported but no longer are.
     prevImports.forEach((dep) => {
       if (!nextImports.has(dep)) {
@@ -153,27 +187,41 @@ export class ModuleGraph {
         }
       }
     })
-    // update accepted hmr deps
+
+    // 遍历 `当前模块` 的 `接收热更新的模块`
     const deps = (mod.acceptedHmrDeps = new Set())
     for (const accepted of acceptedModules) {
+      // 找到 `接收热更新模块` 的节点信息
       const dep =
         typeof accepted === 'string'
           ? await this.ensureEntryFromUrl(accepted, ssr)
           : accepted
+
+      // 把 `接受更新的模块` 信息添加进 `当前模块` 的 `接受更新的模块`。
       deps.add(dep)
     }
     return noLongerImported
   }
 
+  // 添加模块依赖图
   async ensureEntryFromUrl(rawUrl: string, ssr?: boolean): Promise<ModuleNode> {
+    // 调用各个插件的 resolveId 钩子得到路径信息
     const [url, resolvedId, meta] = await this.resolveUrl(rawUrl, ssr)
+
+    // 如果没有缓存，就创建新的 ModuleNode 对象
+    // 并记录到 urlToModuleMap、idToModuleMap、fileToModulesMap 这三张表中
     let mod = this.urlToModuleMap.get(url)
     if (!mod) {
       mod = new ModuleNode(url)
       if (meta) mod.meta = meta
+      // 以 url 记录
       this.urlToModuleMap.set(url, mod)
+
+      // 以 id 记录
       mod.id = resolvedId
       this.idToModuleMap.set(resolvedId, mod)
+
+      // 以文件路径记录，去除查询字符串
       const file = (mod.file = cleanUrl(resolvedId))
       let fileMappedModules = this.fileToModulesMap.get(file)
       if (!fileMappedModules) {
@@ -214,6 +262,7 @@ export class ModuleGraph {
   // 1. remove the HMR timestamp query (?t=xxxx)
   // 2. resolve its extension so that urls with or without extension all map to
   // the same module
+  // 解析 url 路径，删除查询字符串 t=xxxx 和补充扩展名
   async resolveUrl(url: string, ssr?: boolean): Promise<ResolvedUrl> {
     url = removeImportQuery(removeTimestampQuery(url))
     const resolved = await this.resolveId(url, !!ssr)

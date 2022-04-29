@@ -1,0 +1,31 @@
+{
+  "editor.formatOnSave": true,
+  "todo-tree.general.tags": [
+    "VITETODO",
+    "VITE-开发服务",
+    "VITE-配置文件解析",
+    "VITE-预构建",
+    "VITE-插件容器",
+    "VITE-HMR"
+  ],
+  "todo-tree.highlights.customHighlight": {
+    "VITETODO": {
+      "background": "#ffffff"
+    },
+    "VITE-开发服务": {
+      "background": "#993366"
+    },
+    "VITE-配置文件解析": {
+      "background": "#99cccc"
+    },
+    "VUENEXT-预构建": {
+      "background": "#99cc33"
+    },
+    "VITE-插件容器": {
+      "background": "#0099ff"
+    },
+    "VITE-HMR": {
+      "background": "#5522BB"
+    }
+  }
+}

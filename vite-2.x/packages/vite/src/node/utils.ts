@@ -721,7 +721,7 @@ export const usingDynamicImport = typeof jest === 'undefined'
  * @param file File path to import.
  */
 export const dynamicImport = usingDynamicImport
-  ? new Function('file', 'return import(file)')
+  ? new Function('file', 'return import(file)') // 可以避免打包工具转换这段代码
   : require
 
 export function parseRequest(id: string): Record<string, string> | null {

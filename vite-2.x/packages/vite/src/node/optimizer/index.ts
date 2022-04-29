@@ -172,6 +172,7 @@ export interface DepOptimizationMetadata {
 /**
  * Used by Vite CLI when running `vite optimize`
  */
+// VITE-预构建 预构建依赖
 export async function optimizeDeps(
   config: ResolvedConfig,
   force = config.server.force,
@@ -179,6 +180,7 @@ export async function optimizeDeps(
 ): Promise<DepOptimizationMetadata> {
   const log = asCommand ? config.logger.info : debug
 
+  // 1、加载预构建缓存
   const cachedMetadata = loadCachedDepOptimizationMetadata(
     config,
     force,
@@ -187,11 +189,14 @@ export async function optimizeDeps(
   if (cachedMetadata) {
     return cachedMetadata
   }
+
+  // 2、扫描项目依赖
   const depsInfo = await discoverProjectDependencies(config)
 
   const depsString = depsLogString(Object.keys(depsInfo))
   log(colors.green(`Optimizing dependencies:\n  ${depsString}`))
 
+  // 3、执行预构建
   const result = await runOptimizeDeps(config, depsInfo)
 
   result.commit()
@@ -228,6 +233,7 @@ export function addOptimizedDepInfo(
  * Creates the initial dep optimization metadata, loading it from the deps cache
  * if it exists and pre-bundling isn't forced
  */
+// VITE-预构建 1-加载预构建缓存
 export function loadCachedDepOptimizationMetadata(
   config: ResolvedConfig,
   force = config.server.force,
@@ -237,15 +243,20 @@ export function loadCachedDepOptimizationMetadata(
 
   // Before Vite 2.9, dependencies were cached in the root of the cacheDir
   // For compat, we remove the cache if we find the old structure
+  // 清除 2.9 之前版本的缓存目录
   if (fs.existsSync(path.join(config.cacheDir, '_metadata.json'))) {
     emptyDir(config.cacheDir)
   }
 
+  // 获取缓存的目录，默认 node_modules/.vite/dep/
   const depsCacheDir = getDepsCacheDir(config)
 
+  // 非强制重启，默认走到这里
   if (!force) {
+    // _metadata.json 存储的是关键的信息
     let cachedMetadata: DepOptimizationMetadata | undefined
     try {
+      // 读取元信息
       const cachedMetadataPath = path.join(depsCacheDir, '_metadata.json')
       cachedMetadata = parseOptimizedDepsMetadata(
         fs.readFileSync(cachedMetadataPath, 'utf-8'),
@@ -253,6 +264,7 @@ export function loadCachedDepOptimizationMetadata(
       )
     } catch (e) {}
     // hash is consistent, no need to re-bundle
+    // 当前计算出的哈希值与 _metadata.json 中记录的哈希值一致，表示命中缓存，不用预构建
     if (cachedMetadata && cachedMetadata.hash === getDepHash(config)) {
       log('Hash is consistent. Skipping. Use --force to override.')
       // Nothing to commit or cancel as we are using the cache, we only
@@ -264,6 +276,7 @@ export function loadCachedDepOptimizationMetadata(
   }
 
   // Start with a fresh cache
+  // 如果强制重启删除缓存
   removeDirSync(depsCacheDir)
 }
 
@@ -271,12 +284,19 @@ export function loadCachedDepOptimizationMetadata(
  * Initial optimizeDeps at server start. Perform a fast scan using esbuild to
  * find deps to pre-bundle and include user hard-coded dependencies
  */
+// VITE-预构建 2-扫描项目依赖
 export async function discoverProjectDependencies(
   config: ResolvedConfig,
   timestamp?: string
 ): Promise<Record<string, OptimizedDepInfo>> {
+  // 扫描导入的包，扫描后结果如
+  // {
+  //   vue: '/User/Project/node_modules/vue/index.js',
+  //   @vue/runtime-core: '/User/Project/node_modules/@vue/runtime-core/index.js'
+  // }
   const { deps, missing } = await scanImports(config)
 
+  // 如果存在打印预构建包列表
   const missingIds = Object.keys(missing)
   if (missingIds.length) {
     throw new Error(
@@ -293,18 +313,25 @@ export async function discoverProjectDependencies(
 
   await addManuallyIncludedOptimizeDeps(deps, config)
 
+  // 计算 hash 值。用于缓存标识如果依赖变化则缓存失效
   const browserHash = getOptimizedBrowserHash(
     getDepHash(config),
     deps,
     timestamp
   )
+
+  // 转换成对象补充一些信息
   const discovered: Record<string, OptimizedDepInfo> = {}
   for (const id in deps) {
     const entry = deps[id]
     discovered[id] = {
+      // 原始模块名
       id,
+      // 预构建后的文件路径
       file: getOptimizedDepPath(id, config),
+      // 源文件的路径
       src: entry,
+      // 缓存用的 hash 值
       browserHash: browserHash
     }
   }
@@ -330,6 +357,7 @@ export function depsLogString(qualifiedIds: string[]): string {
  * Internally, Vite uses this function to prepare a optimizeDeps run. When Vite starts, we can get
  * the metadata and start the server without waiting for the optimizeDeps processing to be completed
  */
+// VITE-预构建 3-执行预构建
 export async function runOptimizeDeps(
   config: ResolvedConfig,
   depsInfo: Record<string, OptimizedDepInfo>
@@ -339,6 +367,7 @@ export async function runOptimizeDeps(
     command: 'build'
   }
 
+  // 获取缓存目录
   const depsCacheDir = getDepsCacheDir(config)
   const processingCacheDir = getProcessingDepsCacheDir(config)
 
@@ -353,6 +382,7 @@ export async function runOptimizeDeps(
 
   // a hint for Node.js
   // all files in the cache directory should be recognized as ES modules
+  // 写入 package.json 证明都是 esm 格式的
   writeFile(
     path.resolve(processingCacheDir, 'package.json'),
     JSON.stringify({ type: 'module' })
@@ -397,8 +427,14 @@ export async function runOptimizeDeps(
 
   await init
   for (const id in depsInfo) {
+    // 扁平化路径把 / 替换为 __
+    // {
+    //   vue: '/User/Project/node_modules/vue/index.js',
+    //   @vue_runtime-core: '/User/Project/node_modules/@vue/runtime-core/index.js'
+    // }
     const flatId = flattenId(id)
     const filePath = (flatIdDeps[flatId] = depsInfo[id].src!)
+
     let exportsData: ExportsData
     if (config.optimizeDeps.extensions?.some((ext) => filePath.endsWith(ext))) {
       // For custom supported extensions, build the entry file to transform it into JS,
@@ -413,10 +449,12 @@ export async function runOptimizeDeps(
       })
       exportsData = parse(result.outputFiles[0].text) as ExportsData
     } else {
+      // 读取入口文件内容确定导出的模块类型
       const entryContent = fs.readFileSync(filePath, 'utf-8')
       try {
         exportsData = parse(entryContent) as ExportsData
       } catch {
+        // 处理 jsx
         const loader = esbuildOptions.loader?.[path.extname(filePath)] || 'jsx'
         debug(
           `Unable to parse dependency: ${id}. Trying again with a ${loader} transform.`
@@ -432,14 +470,18 @@ export async function runOptimizeDeps(
         }
         exportsData = parse(transformed.code) as ExportsData
       }
+
+      // 上面 parse 是 es-module-lexer 是用来解析解析 ES 导入导出的语法，它会解析出文件的所有的 import 和 export 语句
       for (const { ss, se } of exportsData[0]) {
         const exp = entryContent.slice(ss, se)
+        // 标记存在 `export * from` 语法
         if (/export\s+\*\s+from/.test(exp)) {
           exportsData.hasReExports = true
         }
       }
     }
 
+    // 将 import 和 export 信息记录下来
     idToExports[id] = exportsData
     flatIdToExports[flatId] = exportsData
   }
@@ -454,9 +496,10 @@ export async function runOptimizeDeps(
 
   const start = performance.now()
 
+  // 打包依赖并写入文件，如何处理代理 ES 和 CommonJS 以及代理模块的逻辑都在 esbuildDepPlugin 插件里。
   const result = await build({
     absWorkingDir: process.cwd(),
-    entryPoints: Object.keys(flatIdDeps),
+    entryPoints: Object.keys(flatIdDeps), // 所有的依赖入口，传入的不是真实的路径所以 esbuild 会调用 onResolve 钩子处理。
     bundle: true,
     format: 'esm',
     target: config.build.target || undefined,
@@ -483,6 +526,7 @@ export async function runOptimizeDeps(
     processingCacheDir
   )
 
+  // 组装 metadata.json 信息写入缓存中
   for (const id in depsInfo) {
     const output = esbuildOutputFromId(meta.outputs, id, processingCacheDir)
 
@@ -609,6 +653,7 @@ export function getOptimizedDepPath(id: string, config: ResolvedConfig) {
   )
 }
 
+// 获取缓存目录
 export function getDepsCacheDir(config: ResolvedConfig) {
   return normalizePath(path.resolve(config.cacheDir, 'deps'))
 }
@@ -782,21 +827,30 @@ function isSingleDefaultExport(exports: readonly string[]) {
   return exports.length === 1 && exports[0] === 'default'
 }
 
+// 哪些文件会影响预构建的结构，根据这些信息生成哈希值。
 const lockfileFormats = ['package-lock.json', 'yarn.lock', 'pnpm-lock.yaml']
-
 export function getDepHash(config: ResolvedConfig): string {
+  // 获取 lock 文件内容
   let content = lookupFile(config.root, lockfileFormats) || ''
   // also take config into account
   // only a subset of config options that can affect dep optimization
   content += JSON.stringify(
     {
+      // 开发/生产环境
       mode: config.mode,
+      // 项目根目录
       root: config.root,
+      // 全局常量
       define: config.define,
+      // 路径解析配置
       resolve: config.resolve,
+      // 编译目标
       buildTarget: config.build.target,
+      // 自定义资源类型
       assetsInclude: config.assetsInclude,
+      // 插件
       plugins: config.plugins.map((p) => p.name),
+      // 预构建配置
       optimizeDeps: {
         include: config.optimizeDeps?.include,
         exclude: config.optimizeDeps?.exclude,
@@ -808,6 +862,7 @@ export function getDepHash(config: ResolvedConfig): string {
         }
       }
     },
+    // 特殊处理函数和正则类型
     (_, value) => {
       if (typeof value === 'function' || value instanceof RegExp) {
         return value.toString()
@@ -815,6 +870,7 @@ export function getDepHash(config: ResolvedConfig): string {
       return value
     }
   )
+  // 计算哈希值
   return getHash(content)
 }
 
@@ -826,6 +882,8 @@ function getOptimizedBrowserHash(
   return getHash(hash + JSON.stringify(deps) + timestamp)
 }
 
+// 使用 node crypto 计算哈希值
+// http://nodejs.cn/api/crypto.html#cryptocreatehashalgorithm-options
 export function getHash(text: string): string {
   return createHash('sha256').update(text).digest('hex').substring(0, 8)
 }

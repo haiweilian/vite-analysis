@@ -88,6 +88,8 @@ export interface InternalResolveOptions extends ResolveOptions {
   scan?: boolean
 }
 
+// 路径解析插件实现了 Node.js 官方的 resolve 算法(https://nodejs.org/api/modules.html#modules_all_together)
+// 并实现了内部需要的特性
 export function resolvePlugin(baseOptions: InternalResolveOptions): Plugin {
   const {
     root,

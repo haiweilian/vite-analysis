@@ -213,6 +213,9 @@ export async function createPluginContainer(
   // we should create a new context for each async hook pipeline so that the
   // active plugin in that pipeline can be tracked in a concurrency-safe manner.
   // using a class to make creating new contexts more efficient
+  // VITE-插件容器 1-插件上下文
+  // 插件上下文，通过 this.xx 调用的方法
+  // 上下文方法：https://rollupjs.org/guide/en/#plugin-context
   class Context implements PluginContext {
     meta = minimalContext.meta
     ssr = false
@@ -227,6 +230,7 @@ export async function createPluginContainer(
       this._activePlugin = initialPlugin || null
     }
 
+    // 解析 ast
     parse(code: string, opts: any = {}) {
       return parser.parse(code, {
         sourceType: 'module',
@@ -236,6 +240,7 @@ export async function createPluginContainer(
       })
     }
 
+    // 解析模块路径
     async resolve(
       id: string,
       importer?: string,
@@ -255,6 +260,7 @@ export async function createPluginContainer(
       return out as ResolvedId | null
     }
 
+    // 获取模块的依赖图
     getModuleInfo(id: string) {
       return getModuleInfo(id)
     }
@@ -265,25 +271,30 @@ export async function createPluginContainer(
         : Array.prototype[Symbol.iterator]()
     }
 
+    // 记录监听的文件
     addWatchFile(id: string) {
       watchFiles.add(id)
       ;(this._addedImports || (this._addedImports = new Set())).add(id)
       if (watcher) ensureWatchedFile(watcher, id, root)
     }
 
+    // 获取监听的文件
     getWatchFiles() {
       return [...watchFiles]
     }
 
+    // 只声明未实现
     emitFile(assetOrFile: EmittedFile) {
       warnIncompatibleMethod(`emitFile`, this._activePlugin!.name)
       return ''
     }
 
+    // 只声明未实现
     setAssetSource() {
       warnIncompatibleMethod(`setAssetSource`, this._activePlugin!.name)
     }
 
+    // 只声明未实现
     getFileName() {
       warnIncompatibleMethod(`getFileName`, this._activePlugin!.name)
       return ''
@@ -399,6 +410,7 @@ export async function createPluginContainer(
     return err
   }
 
+  // 转换钩子的上下文，多了一个解析 sourcemap 和并的功能
   class TransformContext extends Context {
     filename: string
     originalCode: string
@@ -460,7 +472,14 @@ export async function createPluginContainer(
 
   let closed = false
 
+  // VITE-插件容器
+  // 插件容器是 vite 用来调度和组织插件的
+  // 在开发环境下 vite 模拟了一套 rollup 的插件机制，使 rollup 部分插件可以直接使用。
+  // 在生产环境下由于可以兼容 rollup 所以直接把插件列表传入 rollup.plugins 中就可以使用。
+  // 而对于一些特殊的钩子只服务于 vite，在 rollup 打包过程中也会忽略掉当然这些在传入之前都已经处理过了，比如合并配置在解析配置的合并过了。
+  // TIP: 所有钩子的调用时机可以全局搜索 "钩子调用 =>" 查找
   const container: PluginContainer = {
+    // 异步串行钩子
     options: await (async () => {
       let options = rollupOptions
       for (const plugin of plugins) {
@@ -480,10 +499,12 @@ export async function createPluginContainer(
 
     getModuleInfo,
 
+    // 异步并行钩子
     async buildStart() {
       await Promise.all(
         plugins.map((plugin) => {
           if (plugin.buildStart) {
+            // 钩子调用 => options
             return plugin.buildStart.call(
               new Context(plugin) as any,
               container.options as NormalizedInputOptions
@@ -493,6 +514,7 @@ export async function createPluginContainer(
       )
     },
 
+    // 异步优先钩子
     async resolveId(rawId, importer = join(root, 'index.html'), options) {
       const skip = options?.skip
       const ssr = options?.ssr
@@ -505,6 +527,8 @@ export async function createPluginContainer(
 
       let id: string | null = null
       const partial: Partial<PartialResolvedId> = {}
+
+      // 循环执行配置中的插件
       for (const plugin of plugins) {
         if (!plugin.resolveId) continue
         if (skip?.has(plugin)) continue
@@ -559,10 +583,13 @@ export async function createPluginContainer(
       }
     },
 
+    // 异步优先钩子
     async load(id, options) {
       const ssr = options?.ssr
+      // 创建插件上下文
       const ctx = new Context()
       ctx.ssr = !!ssr
+      // 循环执行配置中的插件
       for (const plugin of plugins) {
         if (!plugin.load) continue
         ctx._activePlugin = plugin
@@ -577,11 +604,14 @@ export async function createPluginContainer(
       return null
     },
 
+    // 异步串行钩子
     async transform(code, id, options) {
       const inMap = options?.inMap
       const ssr = options?.ssr
+      // 创建转换的上下文
       const ctx = new TransformContext(id, code, inMap as SourceMap)
       ctx.ssr = !!ssr
+      // 循环执行配置中的插件
       for (const plugin of plugins) {
         if (!plugin.transform) continue
         ctx._activePlugin = plugin
@@ -619,12 +649,16 @@ export async function createPluginContainer(
       }
     },
 
+    // 异步并行钩子
     async close() {
       if (closed) return
       const ctx = new Context()
+      // 钩子调用 => buildEnd
       await Promise.all(
         plugins.map((p) => p.buildEnd && p.buildEnd.call(ctx as any))
       )
+
+      // 钩子调用 => closeBundle
       await Promise.all(
         plugins.map((p) => p.closeBundle && p.closeBundle.call(ctx as any))
       )

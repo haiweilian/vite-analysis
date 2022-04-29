@@ -79,6 +79,7 @@ export function esbuildDepPlugin(
     name: 'vite:dep-pre-bundle',
     setup(build) {
       // externalize assets and commonly known non-js file types
+      // 排除非 js 类型的
       build.onResolve(
         {
           filter: new RegExp(`\\.(` + allExternalTypes.join('|') + `)(\\?.*)?$`)
@@ -94,6 +95,7 @@ export function esbuildDepPlugin(
         }
       )
 
+      // 是否是入口标记为虚拟模块
       function resolveEntry(id: string) {
         const flatId = flattenId(id)
         if (flatId in qualified) {
@@ -107,6 +109,7 @@ export function esbuildDepPlugin(
       build.onResolve(
         { filter: /^[\w@][^:]/ },
         async ({ path: id, importer, kind }) => {
+          // 排除
           if (moduleListContains(config.optimizeDeps?.exclude, id)) {
             return {
               path: id,
@@ -117,6 +120,7 @@ export function esbuildDepPlugin(
           // ensure esbuild uses our resolved entries
           let entry: { path: string; namespace: string } | undefined
           // if this is an entry, return entry namespace resolve result
+          // 判断是否为入口模块，如果是，则标记上`dep`的 namespace，成为一个虚拟模块
           if (!importer) {
             if ((entry = resolveEntry(id))) return entry
             // check if this is aliased to an entry - also return entry namespace
@@ -156,10 +160,17 @@ export function esbuildDepPlugin(
       // referenced via relative imports - if we don't separate the proxy and
       // the actual module, esbuild will create duplicated copies of the same
       // module!
+      // 代理模块：不直接打包依赖先创建一个代理的文件，在代理某块里重新导出
+      // 为什么要做代理呢：
+      // 比如 vue 和 vue-router：
+      // 其中 vue-router 使用了 import xx from 'vue'
+      // 在预构建的结果 vue.js 和 vue-router.js 引用的同一份原始 vue 内容。而不是两份
       const root = path.resolve(config.root)
       build.onLoad({ filter: /.*/, namespace: 'dep' }, ({ path: id }) => {
+        // 获取真实路径 vue: '/User/Project/node_modules/vue/index.js',
         const entryFile = qualified[id]
 
+        // 获取相对路径 node_modules/vue/index.js
         let relativePath = normalizePath(path.relative(root, entryFile))
         if (
           !relativePath.startsWith('./') &&
@@ -170,15 +181,19 @@ export function esbuildDepPlugin(
         }
 
         let contents = ''
+        // 拿到对应模块的导入和导出
         const data = exportsData[id]
         const [imports, exports] = data
+        // 如果没有导入也没有导出是 CommonJS
         if (!imports.length && !exports.length) {
           // cjs
           contents += `export default require("${relativePath}");`
         } else {
+          // esm 默认导出
           if (exports.includes('default')) {
             contents += `import d from "${relativePath}";export default d;`
           }
+          // 非默认导出
           if (
             data.hasReExports ||
             exports.length > 1 ||

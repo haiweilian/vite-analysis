@@ -170,6 +170,7 @@ export function transformMiddleware(
         }
 
         // resolve, load and transform using the plugin container
+        // VITE-HMR 3-依赖图构建时机
         const result = await transformRequest(url, server, {
           html: req.headers.accept?.includes('text/html')
         })

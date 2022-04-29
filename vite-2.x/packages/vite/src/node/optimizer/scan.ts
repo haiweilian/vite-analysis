@@ -46,20 +46,24 @@ const htmlTypesRE = /\.(html|vue|svelte|astro)$/
 export const importsRE =
   /(?<!\/\/.*)(?<=^|;|\*\/)\s*import(?!\s+type)(?:[\w*{}\n\r\t, ]+from\s*)?\s*("[^"]+"|'[^']+')\s*(?=$|;|\/\/|\/\*)/gm
 
+// 扫描导入的包
 export async function scanImports(config: ResolvedConfig): Promise<{
   deps: Record<string, string>
   missing: Record<string, string>
 }> {
   const start = performance.now()
 
+  // 扫描的入口
   let entries: string[] = []
 
   const explicitEntryPatterns = config.optimizeDeps.entries
   const buildInput = config.build.rollupOptions?.input
 
   if (explicitEntryPatterns) {
+    // 从配置指定的入口点抓取
     entries = await globEntries(explicitEntryPatterns, config)
   } else if (buildInput) {
+    // 从项目的入口点抓取
     const resolvePath = (p: string) => path.resolve(config.root, p)
     if (typeof buildInput === 'string') {
       entries = [resolvePath(buildInput)]
@@ -71,6 +75,7 @@ export async function scanImports(config: ResolvedConfig): Promise<{
       throw new Error('invalid rollupOptions.input value.')
     }
   } else {
+    // 从所有的 html 中抓取
     entries = await globEntries('**/*.html', config)
   }
 
@@ -97,6 +102,7 @@ export async function scanImports(config: ResolvedConfig): Promise<{
     debug(`Crawling dependencies using entries:\n  ${entries.join('\n  ')}`)
   }
 
+  // 记录依赖
   const deps: Record<string, string> = {}
   const missing: Record<string, string> = {}
   const container = await createPluginContainer(config)
@@ -105,6 +111,7 @@ export async function scanImports(config: ResolvedConfig): Promise<{
   const { plugins = [], ...esbuildOptions } =
     config.optimizeDeps?.esbuildOptions ?? {}
 
+  // 打包所有的入口文件，入口文件可能是 .js/.ts/.html/.vue 所以有一个比较复杂的解析插件 esbuildScanPlugin
   await Promise.all(
     entries.map((entry) =>
       build({
@@ -129,6 +136,7 @@ export async function scanImports(config: ResolvedConfig): Promise<{
   }
 }
 
+// 排序名称
 function orderedDependencies(deps: Record<string, string>) {
   const depsList = Object.entries(deps)
   // Ensure the same browserHash for the same set of dependencies
@@ -136,6 +144,7 @@ function orderedDependencies(deps: Record<string, string>) {
   return Object.fromEntries(depsList)
 }
 
+// 使用 fast-glob 配置文件
 function globEntries(pattern: string | string[], config: ResolvedConfig) {
   return glob(pattern, {
     cwd: config.root,
@@ -160,6 +169,7 @@ const typeRE = /\btype\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s'">]+))/im
 const langRE = /\blang\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s'">]+))/im
 const contextRE = /\bcontext\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s'">]+))/im
 
+// esbuild 扫描插件
 function esbuildScanPlugin(
   config: ResolvedConfig,
   container: PluginContainer,
@@ -199,7 +209,7 @@ function esbuildScanPlugin(
 
   const externalUnlessEntry = ({ path }: { path: string }) => ({
     path,
-    external: !entries.includes(path)
+    external: !entries.includes(path) // 不是入口文件
   })
 
   return {
@@ -357,30 +367,40 @@ function esbuildScanPlugin(
       )
 
       // bare imports: record and externalize ----------------------------------
+      // 解析 import 和 记录依赖
       build.onResolve(
         {
           // avoid matching windows volume
           filter: /^[\w@][^:]/
         },
         async ({ path: id, importer }) => {
+          // 排除1.：config.optimizeDeps?.exclude 配置的
           if (moduleListContains(exclude, id)) {
             return externalUnlessEntry({ path: id })
           }
+          // 排除2.：如果已经包含
           if (depImports[id]) {
             return externalUnlessEntry({ path: id })
           }
+          // 调用插件的 resolveId 方法进行解析
           const resolved = await resolve(id, importer)
           if (resolved) {
+            // 排除3.：如果虚拟模块
             if (shouldExternalizeDep(resolved, id)) {
               return externalUnlessEntry({ path: id })
             }
+            // 如果在 node_modules 中，或者在 config.optimizeDeps?.include 配置则记录依赖
             if (resolved.includes('node_modules') || include?.includes(id)) {
               // dependency or forced included, externalize and stop crawling
+              // 如果 resolved 为 js 或 ts 文件
               if (isOptimizable(resolved)) {
+                // 正式记录依赖
                 depImports[id] = resolved
               }
+              // 排除4：其他类型并且不是入口
               return externalUnlessEntry({ path: id })
             } else if (isScannable(resolved)) {
+              // 如果是 html/vue/...
               const namespace = htmlTypesRE.test(resolved) ? 'html' : undefined
               // linked package, keep crawling
               return {
@@ -388,6 +408,7 @@ function esbuildScanPlugin(
                 namespace
               }
             } else {
+              // 排除5：其他类型并且不是入口
               return externalUnlessEntry({ path: id })
             }
           } else {

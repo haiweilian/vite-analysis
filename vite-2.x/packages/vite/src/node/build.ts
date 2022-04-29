@@ -310,22 +310,47 @@ export function resolveBuildPlugins(config: ResolvedConfig): {
   return {
     pre: [
       ...(options.watch ? [ensureWatchPlugin()] : []),
+
       watchPackageDataPlugin(config),
+
+      // 生产环境中使用 @rollup/plugin-commonjs 将 Commonjs 转换为 ESM
       commonjsPlugin(options.commonjsOptions),
+
+      // date-uri 插件用来支持 import 模块中含有 Base64 编码的情况
       dataURIPlugin(),
+
+      // 用于支持在动态 import 中使用变量的功能
       dynamicImportVars(options.dynamicImportVarsOptions),
+
+      // 支持 new URL 动态变量和路径转换
       assetImportMetaUrlPlugin(config),
+
+      // rollupOptions.plugins 中配置的 rollup 插件
       ...(options.rollupOptions.plugins
         ? (options.rollupOptions.plugins.filter(Boolean) as Plugin[])
         : [])
     ],
     post: [
+      // 分析导入，比如动态 import / import.meta.glob
       buildImportAnalysisPlugin(config),
+
+      // 使用 esbuild 压缩代码
       ...(config.esbuild !== false ? [buildEsbuildPlugin(config)] : []),
+
+      // 使用 terser 压缩代码
       ...(options.minify ? [terserPlugin(config)] : []),
+
+      // 构建清单，打包后的各种资源文件及其关联信息
       ...(options.manifest ? [manifestPlugin(config)] : []),
+
+      // ssr构建清单，打包后的各种资源文件及其关联信息
       ...(options.ssrManifest ? [ssrManifestPlugin(config)] : []),
+
+      // 输出打包后的日志信息
+      // dist/xxx.js   xx kb
       buildReporterPlugin(config),
+
+      // 兜底的加载插件
       loadFallbackPlugin()
     ]
   }
@@ -392,6 +417,8 @@ async function doBuild(
   const outDir = resolve(options.outDir)
 
   // inject ssr arg to plugin load/transform hooks
+  // VITE-插件容器 3.1-生成环境使用插件
+  // 在配置解析中把最终的插件集合放到了 config.plugins
   const plugins = (
     ssr ? config.plugins.map((p) => injectSsrFlagToHooks(p)) : config.plugins
   ) as Plugin[]

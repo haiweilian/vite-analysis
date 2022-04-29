@@ -16,6 +16,7 @@ declare const __HMR_ENABLE_OVERLAY__: boolean
 console.log('[vite] connecting...')
 
 // use server configuration, then fallback to inference
+// VITE-HMR 6-与 ViteDevServer 中的 WebSocket 建立链接
 const socketProtocol =
   __HMR_PROTOCOL__ || (location.protocol === 'https:' ? 'wss' : 'ws')
 const socketHost = `${__HMR_HOSTNAME__ || location.hostname}:${__HMR_PORT__}`
@@ -41,6 +42,7 @@ function cleanUrl(pathname: string): string {
 }
 
 // Listen for messages
+// VITE-HMR 6.1-监听 ws 的 messgae
 socket.addEventListener('message', async ({ data }) => {
   handleMessage(JSON.parse(data))
 })
@@ -49,6 +51,7 @@ let isFirstUpdate = true
 
 async function handleMessage(payload: HMRPayload) {
   switch (payload.type) {
+    // 连接成功和执行心跳检测
     case 'connected':
       console.log(`[vite] connected.`)
       sendMessageBuffer()
@@ -56,6 +59,7 @@ async function handleMessage(payload: HMRPayload) {
       // so send ping package let ws keep alive.
       setInterval(() => socket.send('{"type":"ping"}'), __HMR_TIMEOUT__)
       break
+    // VITE-HMR 6.2-处理热更新类型
     case 'update':
       notifyListeners('vite:beforeUpdate', payload)
       // if this is the first update and there's already an error overlay, it
@@ -69,8 +73,11 @@ async function handleMessage(payload: HMRPayload) {
         clearErrorOverlay()
         isFirstUpdate = false
       }
+
+      // 处理接收到的更新信息
       payload.updates.forEach((update) => {
         if (update.type === 'js-update') {
+          // js 的更新逻辑
           queueUpdate(fetchUpdate(update))
         } else {
           // css-update
@@ -93,10 +100,12 @@ async function handleMessage(payload: HMRPayload) {
         }
       })
       break
+    // 自定义类型
     case 'custom': {
       notifyListeners(payload.event, payload.data)
       break
     }
+    // 刷新页面
     case 'full-reload':
       notifyListeners('vite:beforeFullReload', payload)
       if (payload.path && payload.path.endsWith('.html')) {
@@ -115,6 +124,7 @@ async function handleMessage(payload: HMRPayload) {
         location.reload()
       }
       break
+    // 清楚副总用的回调
     case 'prune':
       notifyListeners('vite:beforePrune', payload)
       // After an HMR update, some modules are no longer imported on the page
@@ -128,6 +138,7 @@ async function handleMessage(payload: HMRPayload) {
         }
       })
       break
+    // 错误时在前端显示覆盖层
     case 'error': {
       notifyListeners('vite:error', payload)
       const err = payload.err
@@ -184,6 +195,7 @@ let queued: Promise<(() => void) | undefined>[] = []
  * so that they are invoked in the same order they were sent.
  * (otherwise the order may be inconsistent because of the http request round trip)
  */
+// 批量任务处理，不与具体的热更新行为挂钩，主要起任务调度作用
 async function queueUpdate(p: Promise<(() => void) | undefined>) {
   queued.push(p)
   if (!pending) {
@@ -283,7 +295,9 @@ export function removeStyle(id: string): void {
   }
 }
 
+// VITE-HMR 6.3-调用收集的更新回调
 async function fetchUpdate({ path, acceptedPath, timestamp }: Update) {
+  // 获取热更新的模块，由 [6.4] 实现收集。
   const mod = hotModulesMap.get(path)
   if (!mod) {
     // In a code-splitting project,
@@ -296,12 +310,15 @@ async function fetchUpdate({ path, acceptedPath, timestamp }: Update) {
   const isSelfUpdate = path === acceptedPath
 
   // make sure we only import each dep once
+  // 1. 需要更新的模块集合
   const modulesToUpdate = new Set<string>()
   if (isSelfUpdate) {
     // self update - only update self
+    // 接受自身更新
     modulesToUpdate.add(path)
   } else {
     // dep update
+    // 接受子模块更新
     for (const { deps } of mod.callbacks) {
       deps.forEach((dep) => {
         if (acceptedPath === dep) {
@@ -312,10 +329,13 @@ async function fetchUpdate({ path, acceptedPath, timestamp }: Update) {
   }
 
   // determine the qualified callbacks before we re-import the modules
+  // 2. 整理需要执行的更新回调函数
+  // 注：mod.callbacks 为 import.meta.hot.accept 中绑定的更新回调函数
   const qualifiedCallbacks = mod.callbacks.filter(({ deps }) => {
     return deps.some((dep) => modulesToUpdate.has(dep))
   })
 
+  // 3. 对将要更新的模块进行失活操作，并通过动态 import 拉取最新的模块信息
   await Promise.all(
     Array.from(modulesToUpdate).map(async (dep) => {
       const disposer = disposeMap.get(dep)
@@ -335,6 +355,7 @@ async function fetchUpdate({ path, acceptedPath, timestamp }: Update) {
     })
   )
 
+  // 4. 返回一个函数，用来执行所有的更新回调
   return () => {
     for (const { deps, fn } of qualifiedCallbacks) {
       fn(deps.map((dep) => moduleMap.get(dep)))
@@ -372,6 +393,11 @@ const ctxToListenersMap = new Map<
   Map<string, ((data: any) => void)[]>
 >()
 
+// VITE-HMR 6.4 实现热更新上下文
+// 在服务端解析依赖的时候【3.3】追加了以下代码
+// import { createHotContext as __vite__createHotContext } from "${clientPublicPath}"
+// import.meta.hot = createHotContext(path)
+// 所以我们才可以使用 import.meta.hot 上的所有方法如下：ViteHotContext
 export function createHotContext(ownerPath: string): ViteHotContext {
   if (!dataMap.has(ownerPath)) {
     dataMap.set(ownerPath, {})
@@ -401,6 +427,7 @@ export function createHotContext(ownerPath: string): ViteHotContext {
   const newListeners = new Map()
   ctxToListenersMap.set(ownerPath, newListeners)
 
+  // 将当前模块的接收模块信息和更新回调注册到 hotModulesMap
   function acceptDeps(deps: string[], callback: HotCallback['fn'] = () => {}) {
     const mod: HotModule = hotModulesMap.get(ownerPath) || {
       id: ownerPath,
@@ -418,6 +445,7 @@ export function createHotContext(ownerPath: string): ViteHotContext {
       return dataMap.get(ownerPath)
     },
 
+    // 将当前模块 accept 过的模块和更新回调函数记录到 hotModulesMap 表中
     accept(deps?: any, callback?: any) {
       if (typeof deps === 'function' || !deps) {
         // self-accept: hot.accept(() => {})

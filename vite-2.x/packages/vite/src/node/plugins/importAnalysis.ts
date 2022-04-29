@@ -138,12 +138,16 @@ export function importAnalysisPlugin(config: ResolvedConfig): Plugin {
 
       const start = performance.now()
       await init
+
+      // VITE-HMR 3.3-分析源代码依赖信息
+      // 源码中 import 语句信息
       let imports: readonly ImportSpecifier[] = []
       // strip UTF-8 BOM
       if (source.charCodeAt(0) === 0xfeff) {
         source = source.slice(1)
       }
       try {
+        // 使用 es-module-lexer 解析出 import 语句
         imports = parseImports(source)[0]
       } catch (e: any) {
         const isVue = importer.endsWith('.vue')
@@ -168,8 +172,10 @@ export function importAnalysisPlugin(config: ResolvedConfig): Plugin {
       const { moduleGraph } = server
       // since we are already in the transform phase of the importer, it must
       // have been loaded so its entry is guaranteed in the module graph.
+      // 获取模块节点信息
       const importerModule = moduleGraph.getModuleById(importer)!
 
+      // 是否为自身热更新；没有导入导出
       if (!imports.length) {
         importerModule.isSelfAccepting = false
         isDebug &&
@@ -317,12 +323,13 @@ export function importAnalysisPlugin(config: ResolvedConfig): Plugin {
       // for each dependency there could be one reload per import
       const importRewrites: (() => Promise<void>)[] = []
 
+      // 循环所有的导入语句
       for (let index = 0; index < imports.length; index++) {
         const {
-          s: start,
-          e: end,
-          ss: expStart,
-          se: expEnd,
+          s: start, // 开始索引 'vue'
+          e: end, // 结束索引 'vue'
+          ss: expStart, // 整体表达式的开始索引 import vue from 'vue'
+          se: expEnd, // 整体表达式的结束索引 import vue from 'vue'
           d: dynamicIndex,
           // #2083 User may use escape path,
           // so use imports[index].n to get the unescaped string
@@ -336,6 +343,7 @@ export function importAnalysisPlugin(config: ResolvedConfig): Plugin {
         if (rawUrl === 'import.meta') {
           const prop = source.slice(end, end + 4)
           if (prop === '.hot') {
+            // 包含 import.meta.hot 需要热更新
             hasHMR = true
             if (source.slice(end + 4, end + 11) === '.accept') {
               // further analyze accepted modules
@@ -350,8 +358,10 @@ export function importAnalysisPlugin(config: ResolvedConfig): Plugin {
               }
             }
           } else if (prop === '.env') {
+            // 包含 import.meta.env 需要处理环境变量
             hasEnv = true
           } else if (prop === '.glo' && source[end + 4] === 'b') {
+            // 转换 import.meta.glob() 语句
             // transform import.meta.glob()
             // e.g. `import.meta.glob('glob:./dir/*.js')`
             const {
@@ -517,6 +527,7 @@ export function importAnalysisPlugin(config: ResolvedConfig): Plugin {
 
           // record for HMR import chain analysis
           // make sure to normalize away base
+          // 记录热更新模块所依赖的模块
           const urlWithoutBase = url.replace(base, '/')
           importedUrls.add(urlWithoutBase)
           if (!isDynamicImport) {
@@ -563,6 +574,7 @@ export function importAnalysisPlugin(config: ResolvedConfig): Plugin {
         }
       }
 
+      // 处理环境变量
       if (hasEnv) {
         // inject import.meta.env
         let env = `import.meta.env = ${JSON.stringify({
@@ -581,6 +593,7 @@ export function importAnalysisPlugin(config: ResolvedConfig): Plugin {
         str().prepend(env)
       }
 
+      // 处理热更新，往代码里插入 '@vite/client' 包，实现 import.meta.hot 的上下文。
       if (hasHMR && !ssr) {
         debugHmr(
           `${
@@ -622,6 +635,7 @@ export function importAnalysisPlugin(config: ResolvedConfig): Plugin {
       // update the module graph for HMR analysis.
       // node CSS imports does its own graph update in the css plugin so we
       // only handle js graph updates here.
+      // 处理 js 的更新依赖图
       if (!isCSSRequest(importer)) {
         // attached by pluginContainer.addWatchFile
         const pluginImports = (this as any)._addedImports as
@@ -640,6 +654,7 @@ export function importAnalysisPlugin(config: ResolvedConfig): Plugin {
         if (ssr && importerModule.isSelfAccepting) {
           isSelfAccepting = true
         }
+        // VITE-HMR 3.4-更新模块节点的信息
         const prunedImports = await moduleGraph.updateModuleInfo(
           importerModule,
           importedUrls,

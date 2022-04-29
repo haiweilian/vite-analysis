@@ -310,13 +310,24 @@ export async function createServer(
     middlewareMode = 'ssr'
   }
 
+  // 使用 connect 创建一个中间件
   const middlewares = connect() as Connect.Server
+
+  // 创建一个 http 服务
   const httpServer = middlewareMode
     ? null
     : await resolveHttpServer(serverConfig, middlewares, httpsOptions)
+
+  // 创建一个 ws 服务
   const ws = createWebSocketServer(httpServer, config, httpsOptions)
 
   const { ignored = [], ...watchOptions } = serverConfig.watch || {}
+
+  // VITE-HMR 4-服务端收集更新模块
+  // chokidar.watch()
+  // watcher.on('change')
+  // watcher.on('add')
+  // watcher.on('unlink')
   const watcher = chokidar.watch(path.resolve(root), {
     ignored: [
       '**/node_modules/**',
@@ -329,10 +340,14 @@ export async function createServer(
     ...watchOptions
   }) as FSWatcher
 
+  // VITE-HMR 1-初始化依赖图实例
+  // 后续可以通过 server.pluginContainer 获取到
   const moduleGraph: ModuleGraph = new ModuleGraph((url, ssr) =>
     container.resolveId(url, undefined, { ssr })
   )
 
+  // VITE-插件容器 3.2-开发环境插件
+  // 在开发环境下创建一个插件容器，后续在开发服务器处理文件的时候调用钩子也同时执行了插件集合中相同的钩子
   const container = await createPluginContainer(config, moduleGraph, watcher)
   const closeHttpServer = createServerCloseFn(httpServer)
 
@@ -402,6 +417,7 @@ export async function createServer(
       await Promise.all([
         watcher.close(),
         ws.close(),
+        // 钩子调用 => buildEnd/closeBundle
         container.close(),
         closeHttpServer()
       ])
@@ -432,6 +448,8 @@ export async function createServer(
     _pendingRequests: new Map()
   }
 
+  // 插件配置的 transformIndexHtml 钩子
+  // 钩子调用 => transformIndexHtml
   server.transformIndexHtml = createDevHtmlTransformFn(server)
 
   exitProcess = async () => {
@@ -457,6 +475,7 @@ export async function createServer(
     return setPackageData(id, pkg)
   }
 
+  // 修改文件，调用 handleHMRUpdate 处理热更新
   watcher.on('change', async (file) => {
     file = normalizePath(file)
     if (file.endsWith('/package.json')) {
@@ -466,6 +485,7 @@ export async function createServer(
     moduleGraph.onFileChange(file)
     if (serverConfig.hmr !== false) {
       try {
+        // 热更新处理
         await handleHMRUpdate(file, server)
       } catch (err) {
         ws.send({
@@ -476,10 +496,12 @@ export async function createServer(
     }
   })
 
+  // 新增文件
   watcher.on('add', (file) => {
     handleFileAddUnlink(normalizePath(file), server)
   })
 
+  // 删除文件
   watcher.on('unlink', (file) => {
     handleFileAddUnlink(normalizePath(file), server, true)
   })
@@ -492,6 +514,8 @@ export async function createServer(
   }
 
   // apply server configuration hooks from plugins
+  // 调用插件的 configureServer 钩子，将当前服务实例传入过去，如果返回一个返回则为后置钩子
+  // 钩子调用 => configureServer
   const postHooks: ((() => void) | void)[] = []
   for (const plugin of config.plugins) {
     if (plugin.configureServer) {
@@ -507,27 +531,33 @@ export async function createServer(
   }
 
   // cors (enabled by default)
+  // 跨域中间件使用 cors 实现
   const { cors } = serverConfig
   if (cors !== false) {
     middlewares.use(corsMiddleware(typeof cors === 'boolean' ? {} : cors))
   }
 
   // proxy
+  // 代理中间件使用 http-proxy 实现
   const { proxy } = serverConfig
   if (proxy) {
     middlewares.use(proxyMiddleware(httpServer, proxy, config))
   }
 
   // base
+  // 如果不是 /，开发环境下 /xx/ 替换为 /
   if (config.base !== '/') {
     middlewares.use(baseMiddleware(server))
   }
 
   // open in editor support
+  // 打开本地编辑器文件
+  // https://github.com/haiweilian/tinylib-analysis/issues/9
   middlewares.use('/__open-in-editor', launchEditorMiddleware())
 
   // hmr reconnect ping
   // Keep the named function. The name is visible in debug logs via `DEBUG=connect:dispatcher ...`
+  // 心跳检测
   middlewares.use('/__vite_ping', function viteHMRPingMiddleware(_, res) {
     res.end('pong')
   })
@@ -535,18 +565,22 @@ export async function createServer(
   // serve static files under /public
   // this applies before the transform middleware so that these files are served
   // as-is without transforms.
+  // 静态资源读取使用 sirv 实现
   if (config.publicDir) {
     middlewares.use(servePublicMiddleware(config.publicDir))
   }
 
   // main transform middleware
+  // 主要的转化逻辑，在内部调用插件的 transform 钩子，转换每个文件
   middlewares.use(transformMiddleware(server))
 
   // serve static files
+  // 静态文件服务
   middlewares.use(serveRawFsMiddleware(server))
   middlewares.use(serveStaticMiddleware(root, server))
 
   // spa fallback
+  // 服务重定向比如 history 模式时，刷新从定向 index.html
   if (!middlewareMode || middlewareMode === 'html') {
     middlewares.use(spaFallbackMiddleware(root))
   }
@@ -554,8 +588,10 @@ export async function createServer(
   // run post config hooks
   // This is applied before the html middleware so that user middleware can
   // serve custom content instead of index.html.
+  // 调用 configureServer 的后置钩子
   postHooks.forEach((fn) => fn && fn())
 
+  // 读取 index.html 并调用插件 transformIndexHtml 把 html 字符串传入过去
   if (!middlewareMode || middlewareMode === 'html') {
     // transform index.html
     middlewares.use(indexHtmlMiddleware(server))
@@ -576,6 +612,7 @@ export async function createServer(
     }
   }
 
+  // 代理 listen 函数，调用 buildStart 等额外工作
   if (!middlewareMode && httpServer) {
     let isOptimized = false
     // overwrite listen to init optimizer before server start
@@ -594,6 +631,7 @@ export async function createServer(
       return listen(port, ...args)
     }) as any
   } else {
+    // 钩子调用 => buildStart
     await container.buildStart({})
     initOptimizer()
   }

@@ -123,9 +123,11 @@ async function doTransform(
   const prettyUrl = isDebug ? prettifyUrl(url, root) : ''
   const ssr = !!options.ssr
 
+  // VITE-HMR 3.1-查找模块的节点信息
   const module = await server.moduleGraph.getModuleByUrl(url, ssr)
 
   // check if we have a fresh cache
+  // 如果存在缓存
   const cached =
     module && (ssr ? module.ssrTransformResult : module.transformResult)
   if (cached) {
@@ -140,6 +142,8 @@ async function doTransform(
   }
 
   // resolve
+  // 调用 PluginContainer 的 resolveId 解析路径
+  // 钩子调用 => resolveId
   const id =
     (await pluginContainer.resolveId(url, undefined, { ssr }))?.id || url
   const file = cleanUrl(id)
@@ -148,7 +152,9 @@ async function doTransform(
   let map: SourceDescription['map'] = null
 
   // load
+  // 调用 PluginContainer 的 load 加载模块
   const loadStart = isDebug ? performance.now() : 0
+  // 钩子调用 => load
   const loadResult = await pluginContainer.load(id, { ssr })
   if (loadResult == null) {
     // if this is an html request and there is no load result, skip ahead to
@@ -206,11 +212,17 @@ async function doTransform(
   }
 
   // ensure module in graph after successful load
+  // VITE-HMR 3.2-创建模块的节点信息
+  // 通过调用 ensureEntryFromUrl 方法创建 ModuleNode，
+  // 创建之后下一步是调用 transform 钩子，我们去分析 importAnalysisPlugin 插件，因为具体的信息是在转换过程中补充的。
   const mod = await moduleGraph.ensureEntryFromUrl(url, ssr)
   ensureWatchedFile(watcher, mod.file, root)
 
   // transform
+  // 调用 PluginContainer 的 transform 转换内容
   const transformStart = isDebug ? performance.now() : 0
+
+  // 钩子调用 => transform
   const transformResult = await pluginContainer.transform(code, id, {
     inMap: map,
     ssr

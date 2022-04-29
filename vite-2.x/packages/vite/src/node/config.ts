@@ -275,13 +275,18 @@ export type ResolveFn = (
   ssr?: boolean
 ) => Promise<string | undefined>
 
+// VITE-配置文件解析
+// 基础部分明白其中的配置什么意思，什么格式后续使用的时候知道
 export async function resolveConfig(
   inlineConfig: InlineConfig,
   command: 'build' | 'serve',
   defaultMode = 'development'
 ): Promise<ResolvedConfig> {
+  // 命令行指定的配置 vite --mode=test
   let config = inlineConfig
+  // 配置文件的依赖，简单来说就是把配置文件拆分到了多个文件便于管理。记录这些的原因是检测文件更改重启服务。
   let configFileDependencies: string[] = []
+  // 当前运行的环境 test/development/production/...
   let mode = inlineConfig.mode || defaultMode
 
   // some dependencies e.g. @vue/compiler-* relies on NODE_ENV for getting
@@ -296,8 +301,11 @@ export async function resolveConfig(
     command
   }
 
+  // VITE-配置文件解析 1-加载配置文件
+  // configFile 表示是否使用配置文件，默认为空或者字符串路径都是使用，除非手动指定为 false
   let { configFile } = config
   if (configFile !== false) {
+    // 加载配置文件的内容，See：loadConfigFromFile
     const loadResult = await loadConfigFromFile(
       configEnv,
       configFile,
@@ -305,6 +313,7 @@ export async function resolveConfig(
       config.logLevel
     )
     if (loadResult) {
+      // 合并配置文件的配置和命令行中的配置(命令行配置 > 配置文件)
       config = mergeConfig(loadResult.config, config)
       configFile = loadResult.path
       configFileDependencies = loadResult.dependencies
@@ -322,6 +331,9 @@ export async function resolveConfig(
   configEnv.mode = mode
 
   // resolve plugins
+  // VITE-配置文件解析 2-过滤用户插件
+  // 首先我们过滤插件因为有些插件只在开发阶段生效，有些插件只在生产阶段生效。
+  // 所以判断哪些内容可以看【情景应用】：https://cn.vitejs.dev/guide/api-plugin.html#conditional-application
   const rawUserPlugins = (config.plugins || []).flat(Infinity).filter((p) => {
     if (!p) {
       return false
@@ -333,10 +345,13 @@ export async function resolveConfig(
       return p.apply === command
     }
   }) as Plugin[]
+
+  // 对插件进行排序，具体怎么排序规则查看【插件顺序】：https://cn.vitejs.dev/guide/api-plugin.html#plugin-ordering
   const [prePlugins, normalPlugins, postPlugins] =
     sortUserPlugins(rawUserPlugins)
 
   // resolve worker
+  // Worker 选项的配置
   const resolvedWorkerOptions: ResolveWorkerOptions = {
     format: config.worker?.format || 'iife',
     plugins: [],
@@ -344,27 +359,35 @@ export async function resolveConfig(
   }
 
   // run config hooks
+  // VITE-配置文件解析 3-配置合并钩子
+  // 依次调用插件 config 钩子，进行深度的配置合并
+  // 钩子调用 => config
   const userPlugins = [...prePlugins, ...normalPlugins, ...postPlugins]
   for (const p of userPlugins) {
     if (p.config) {
       const res = await p.config(config, configEnv)
       if (res) {
+        // mergeConfig 为具体的配置合并函数，每一个配置都有不同的合并规则。
         config = mergeConfig(config, res)
       }
     }
   }
 
   // resolve root
+  // VITE-配置文件解析 4-路径解析
+  // 如果没有指定根目录则是当前目录
   const resolvedRoot = normalizePath(
     config.root ? path.resolve(config.root) : process.cwd()
   )
 
+  // 内部默认别名配置
   const clientAlias = [
     { find: /^[\/]?@vite\/env/, replacement: () => ENV_ENTRY },
     { find: /^[\/]?@vite\/client/, replacement: () => CLIENT_ENTRY }
   ]
 
   // resolve alias with internal client alias
+  // 合并别名配置并标准化配置
   const resolvedAlias = normalizeAlias(
     mergeAlias(
       // @ts-ignore because @rollup/plugin-alias' type doesn't allow function
@@ -374,6 +397,7 @@ export async function resolveConfig(
     )
   )
 
+  // 获取解析相关的配置
   const resolveOptions: ResolvedConfig['resolve'] = {
     dedupe: config.dedupe,
     ...config.resolve,
@@ -381,6 +405,8 @@ export async function resolveConfig(
   }
 
   // load .env files
+  // VITE-配置文件解析 5-加载环境变量
+  // vite 使用 dotenv 加载和解析 .env 配置文件
   const envDir = config.envDir
     ? normalizePath(path.resolve(resolvedRoot, config.envDir))
     : resolvedRoot
@@ -391,6 +417,8 @@ export async function resolveConfig(
   // Note it is possible for user to have a custom mode, e.g. `staging` where
   // production-like behavior is expected. This is indicated by NODE_ENV=production
   // loaded from `.staging.env` and set by us as VITE_USER_NODE_ENV
+  // 如果环境变量中包含 NODE_ENV = production 则会添加到 process.env.VITE_USER_NODE_ENV
+  // vite 会根据这个变量是否走生产环境，再设置到 process.env.NODE_ENV 上
   const isProduction = (process.env.VITE_USER_NODE_ENV || mode) === 'production'
   if (isProduction) {
     // in case default mode was not production and is overwritten
@@ -398,10 +426,15 @@ export async function resolveConfig(
   }
 
   // resolve public base url
+  // 解析基础公共路径并标准化路径
   const BASE_URL = resolveBaseUrl(config.base, command === 'build', logger)
+
+  // 解析生产环境构建配置 https://cn.vitejs.dev/config/#build-options
   const resolvedBuildOptions = resolveBuildOptions(config.build)
 
   // resolve cache directory
+  // VITE-配置文件解析 6-解析缓存目录
+  // 获取缓存目录，用于比如预构建的产物 node_modules/.vite
   const pkgPath = lookupFile(resolvedRoot, [`package.json`], { pathOnly: true })
   const cacheDir = config.cacheDir
     ? path.resolve(resolvedRoot, config.cacheDir)
@@ -409,12 +442,15 @@ export async function resolveConfig(
     ? path.join(path.dirname(pkgPath), `node_modules/.vite`)
     : path.join(resolvedRoot, `.vite`)
 
+  // 过滤指定后缀名的文件作为静态资源处理
   const assetsFilter = config.assetsInclude
     ? createFilter(config.assetsInclude)
     : () => false
 
   // create an internal resolver to be used in special scenarios, e.g.
   // optimizer & handling css @imports
+  // VITE-配置文件解析 7-定义路径解析器
+  // 内部调用插件容器，调用插件列表的 resolveId 钩子解析模块
   const createResolver: ResolvedConfig['createResolver'] = (options) => {
     let aliasContainer: PluginContainer | undefined
     let resolverContainer: PluginContainer | undefined
@@ -452,6 +488,7 @@ export async function resolveConfig(
     }
   }
 
+  // 静态资源目录默认 public
   const { publicDir } = config
   const resolvedPublicDir =
     publicDir !== false && publicDir !== ''
@@ -461,10 +498,13 @@ export async function resolveConfig(
         )
       : ''
 
+  // 开发环境配置
   const server = resolveServerOptions(resolvedRoot, config.server)
 
+  // 预构建优化配置
   const optimizeDeps = config.optimizeDeps || {}
 
+  // VITE-配置文件解析 8-整合最终的配置
   const resolved: ResolvedConfig = {
     ...config,
     configFile: configFile ? normalizePath(configFile) : undefined,
@@ -510,6 +550,7 @@ export async function resolveConfig(
   }
 
   // flat config.worker.plugin
+  // 调用 worker 相关的钩子
   const [workerPrePlugins, workerNormalPlugins, workerPostPlugins] =
     sortUserPlugins(config.worker?.plugins as Plugin[])
   const workerResolved: ResolvedConfig = { ...resolved, isWorker: true }
@@ -523,6 +564,8 @@ export async function resolveConfig(
   await Promise.all(
     resolved.worker.plugins.map((p) => p.configResolved?.(workerResolved))
   )
+
+  // VITE-配置文件解析 9-生成完整的插件集合(config.plugins)
   ;(resolved.plugins as Plugin[]) = await resolvePlugins(
     resolved,
     prePlugins,
@@ -531,8 +574,12 @@ export async function resolveConfig(
   )
 
   // call configResolved hooks
+  // VITE-配置文件解析 10-完成配置合并钩子(configResolved)
+  // 依次调用插件 configResolved 钩子，把配置传入过去，这里已经不建议修改了。
+  // 钩子调用 => configResolved
   await Promise.all(userPlugins.map((p) => p.configResolved?.(resolved)))
 
+  // 开启打印出配置信息
   if (process.env.DEBUG) {
     debug(`using resolved config: %O`, {
       ...resolved,
@@ -541,7 +588,7 @@ export async function resolveConfig(
   }
 
   // TODO Deprecation warnings - remove when out of beta
-
+  // 以下为废弃的配置的警告信息
   const logDeprecationWarning = (
     deprecatedOption: string,
     hint: string,
@@ -668,12 +715,14 @@ export async function resolveConfig(
  * Resolve base. Note that some users use Vite to build for non-web targets like
  * electron or expects to deploy
  */
+// 解析基础路径并标准化
 function resolveBaseUrl(
   base: UserConfig['base'] = '/',
   isBuild: boolean,
   logger: Logger
 ): string {
   // #1669 special treatment for empty for same dir relative base
+  // 空字符或者 ./ 在开发阶段特殊处理，全部重写为/
   if (base === '' || base === './') {
     return isBuild ? base : '/'
   }
@@ -690,6 +739,7 @@ function resolveBaseUrl(
   }
 
   // external URL
+  // 以 http(s):// 开头的路径，在开发环境下重写为对应的 pathname
   if (isExternalUrl(base)) {
     if (!isBuild) {
       // get base from full url during dev
@@ -709,6 +759,7 @@ function resolveBaseUrl(
   }
 
   // ensure ending slash
+  // 确保路径以 / 结尾
   if (!base.endsWith('/')) {
     logger.warn(
       colors.yellow(colors.bold(`(!) "base" option should end with a slash.`))
@@ -767,6 +818,7 @@ function mergeConfigRecursively(
   return merged
 }
 
+// 合并配置项
 export function mergeConfig(
   defaults: Record<string, any>,
   overrides: Record<string, any>,
@@ -775,6 +827,7 @@ export function mergeConfig(
   return mergeConfigRecursively(defaults, overrides, isRoot ? '' : '.')
 }
 
+// 合并别名配置
 function mergeAlias(
   a?: AliasOptions,
   b?: AliasOptions
@@ -789,6 +842,7 @@ function mergeAlias(
   return [...normalizeAlias(b), ...normalizeAlias(a)]
 }
 
+// 标准化别名配置
 function normalizeAlias(o: AliasOptions = []): Alias[] {
   return Array.isArray(o)
     ? o.map(normalizeSingleAlias)
@@ -826,6 +880,7 @@ function normalizeSingleAlias({
   return alias
 }
 
+// 排序用户的插件
 export function sortUserPlugins(
   plugins: (Plugin | Plugin[])[] | undefined
 ): [Plugin[], Plugin[], Plugin[]] {
@@ -844,6 +899,7 @@ export function sortUserPlugins(
   return [prePlugins, normalPlugins, postPlugins]
 }
 
+// 加载配置文件
 export async function loadConfigFromFile(
   configEnv: ConfigEnv,
   configFile?: string,
@@ -857,12 +913,19 @@ export async function loadConfigFromFile(
   const start = performance.now()
   const getTime = () => `${(performance.now() - start).toFixed(2)}ms`
 
+  // TIP: 编写配置的方式可以是以下几种，所以我们要获取文件的格式和解析文件的内容
+  // TS + ESM 格式
+  // TS + CommonJS 格式
+  // JS + ESM 格式
+  // JS + CommonJS 格式
+
   let resolvedPath: string | undefined
-  let isTS = false
-  let isESM = false
+  let isTS = false // 是否 ts
+  let isESM = false // 是否 es module
   let dependencies: string[] = []
 
   // check package.json for type: "module" and set `isMjs` to true
+  // 如果 package.json 包含 type: "module" 标识为 isESM
   try {
     const pkg = lookupFile(configRoot, ['package.json'])
     if (pkg && JSON.parse(pkg).type === 'module') {
@@ -870,17 +933,25 @@ export async function loadConfigFromFile(
     }
   } catch (e) {}
 
+  // 1、先获取都配置文件路径和文件格式
+  // 如果命令行有指定配置文件路径
   if (configFile) {
     // explicit config path is always resolved from cwd
     resolvedPath = path.resolve(configFile)
-    isTS = configFile.endsWith('.ts')
 
+    // 根据后缀名判断文件的类型打上标识
+    isTS = configFile.endsWith('.ts')
     if (configFile.endsWith('.mjs')) {
       isESM = true
     }
   } else {
     // implicit config file loaded from inline root (if present)
     // otherwise from cwd
+    // 如果没有指定，从项目根目录寻找配置文件路径，寻找顺序:
+    // - vite.config.js
+    // - vite.config.mjs
+    // - vite.config.ts
+    // - vite.config.cjs
     const jsconfigFile = path.resolve(configRoot, 'vite.config.js')
     if (fs.existsSync(jsconfigFile)) {
       resolvedPath = jsconfigFile
@@ -911,15 +982,19 @@ export async function loadConfigFromFile(
     }
   }
 
+  // 都没有找出打印信息
   if (!resolvedPath) {
     debug('no config file found.')
     return null
   }
 
+  // 2、开始根据文件格式解析文件内容
   try {
     let userConfig: UserConfigExport | undefined
 
+    // 如果是 ESM
     if (isESM) {
+      // 使用 esbuild 对代码打包
       const fileUrl = require('url').pathToFileURL(resolvedPath)
       const bundled = await bundleConfigFile(resolvedPath, true)
       dependencies = bundled.dependencies
@@ -928,6 +1003,8 @@ export async function loadConfigFromFile(
         // with --experimental-loader themselves, we have to do a hack here:
         // bundle the config file w/ ts transforms first, write it to disk,
         // load it with native Node ESM, then delete the file.
+        // 如果是 ts 文件先写入了临时文件，使用原生 import() 读取到内容后再删除临时文件
+        // 这种做法叫： AOT 即先编译运行时读取。
         fs.writeFileSync(resolvedPath + '.js', bundled.code)
         userConfig = (await dynamicImport(`${fileUrl}.js?t=${Date.now()}`))
           .default
@@ -937,15 +1014,19 @@ export async function loadConfigFromFile(
         // using Function to avoid this from being compiled away by TS/Rollup
         // append a query so that we force reload fresh config in case of
         // server restart
+        // 如果是 js 文件，可以直接使用原生 import() 读取到内容。
         userConfig = (await dynamicImport(`${fileUrl}?t=${Date.now()}`)).default
         debug(`native esm config loaded in ${getTime()}`, fileUrl)
       }
     }
 
+    // 如果不是 ESM，那么就是 cjs
     if (!userConfig) {
       // Bundle config file and transpile it to cjs using esbuild.
+      // 使用 esbuild 对代码打包
       const bundled = await bundleConfigFile(resolvedPath)
       dependencies = bundled.dependencies
+
       userConfig = await loadConfigFromBundledFile(resolvedPath, bundled.code)
       debug(`bundled config file loaded in ${getTime()}`)
     }
@@ -970,6 +1051,7 @@ export async function loadConfigFromFile(
   }
 }
 
+// 打包配置文件
 async function bundleConfigFile(
   fileName: string,
   isESM = false
@@ -988,6 +1070,7 @@ async function bundleConfigFile(
       {
         name: 'externalize-deps',
         setup(build) {
+          // 非相对路径的标记为外部
           build.onResolve({ filter: /.*/ }, (args) => {
             const id = args.path
             if (id[0] !== '.' && !path.isAbsolute(id)) {
@@ -1001,6 +1084,7 @@ async function bundleConfigFile(
       {
         name: 'replace-import-meta',
         setup(build) {
+          // 替换变量值
           build.onLoad({ filter: /\.[jt]s$/ }, async (args) => {
             const contents = await fs.promises.readFile(args.path, 'utf8')
             return {
@@ -1032,11 +1116,14 @@ interface NodeModuleWithCompile extends NodeModule {
   _compile(code: string, filename: string): any
 }
 
+// 加载配置文件
 async function loadConfigFromBundledFile(
   fileName: string,
   bundledCode: string
 ): Promise<UserConfig> {
   const extension = path.extname(fileName)
+  // require.extensions http://nodejs.cn/api/modules.html#requireextensions
+  // 这块的实现是为了加载 .ts 后缀的文件，因为编译的内容在内存中所以手动调用 _compile 返回代码。
   const defaultLoader = require.extensions[extension]!
   require.extensions[extension] = (module: NodeModule, filename: string) => {
     if (filename === fileName) {
@@ -1053,6 +1140,7 @@ async function loadConfigFromBundledFile(
   return config
 }
 
+// 加载环境变量
 export function loadEnv(
   mode: string,
   envDir: string,
@@ -1118,6 +1206,7 @@ export function loadEnv(
   return env
 }
 
+// 解析配置环境的前缀
 export function resolveEnvPrefix({
   envPrefix = 'VITE_'
 }: UserConfig): string[] {

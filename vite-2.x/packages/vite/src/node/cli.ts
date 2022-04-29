@@ -7,6 +7,8 @@ import type { LogLevel } from './logger'
 import { createLogger } from './logger'
 import { resolveConfig } from '.'
 
+// VITE-开发服务 1-创建命令行
+// cac 一个便于创建 cli 程序的库。
 const cli = cac('vite')
 
 // global options
@@ -76,6 +78,7 @@ cli
   .action(async (root: string, options: ServerOptions & GlobalCLIOptions) => {
     // output structure is preserved even after bundling so require()
     // is ok here
+    // VITE-开发服务 2-创建开发服务
     const { createServer } = await import('./server')
     try {
       const server = await createServer({
@@ -160,6 +163,7 @@ cli
     const { build } = await import('./build')
     const buildOptions: BuildOptions = cleanOptions(options)
 
+    // VITE-开发服务 3-执行打包命令
     try {
       await build({
         root,
